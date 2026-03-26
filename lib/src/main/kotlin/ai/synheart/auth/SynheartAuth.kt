@@ -8,7 +8,9 @@ import ai.synheart.auth.internal.ClockSkewTracker
 import ai.synheart.auth.models.*
 import ai.synheart.auth.network.AuthNetworkClient
 import ai.synheart.auth.network.AuthNetworking
+import ai.synheart.auth.registration.AttestationProvider
 import ai.synheart.auth.registration.DeviceRegistrar
+import ai.synheart.auth.registration.NoOpAttestationProvider
 import ai.synheart.auth.storage.StorageManager
 import ai.synheart.auth.storage.StorageManaging
 
@@ -47,12 +49,17 @@ class SynheartAuth private constructor(
         }
     }
 
-    fun configure(baseUrl: String) {
+    private var attestationProvider: AttestationProvider = NoOpAttestationProvider()
+
+    fun configure(baseUrl: String, attestationProvider: AttestationProvider? = null) {
         this.baseUrl = baseUrl
+        if (attestationProvider != null) {
+            this.attestationProvider = attestationProvider
+        }
         val networkClient = AuthNetworkClient(baseUrl)
         this.network = networkClient
-        this.registrar = DeviceRegistrar(keyManager, storage, networkClient)
-        AuthLogger.info("SynheartAuth", "Configured with baseUrl: $baseUrl")
+        this.registrar = DeviceRegistrar(keyManager, storage, networkClient, this.attestationProvider)
+        AuthLogger.info("SynheartAuth", "Configured with baseUrl: $baseUrl, attestation=${attestationProvider?.javaClass?.simpleName ?: "NoOp"}")
     }
 
     fun isRegistered(appId: String): Boolean =
