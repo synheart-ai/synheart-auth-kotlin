@@ -5,12 +5,15 @@ import ai.synheart.auth.internal.AuthLogger
 import ai.synheart.auth.models.*
 import ai.synheart.auth.network.*
 import ai.synheart.auth.storage.StorageManaging
+import java.security.MessageDigest
 import java.util.Base64
+import java.util.UUID
 
 class DeviceRegistrar(
     private val keyManager: KeyManaging,
     private val storage: StorageManaging,
-    private val network: AuthNetworking
+    private val network: AuthNetworking,
+    private val attestationProvider: AttestationProvider = NoOpAttestationProvider()
 ) {
     private val tag = "DeviceRegistrar"
 
@@ -37,20 +40,25 @@ class DeviceRegistrar(
             val publicKeyBytes = keyManager.generateKeyPair(appId)
             storage.saveState(DeviceAuthState.KEY_READY, appId)
 
-            // Step 3: Attestation (skipped on Android — Play Integrity is a future RFC)
-            val attestation: String? = null
+            // Step 3: Compute nonce and generate attestation proof
+            val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKeyBytes)
+            val nonce = computeNonce(challengeResponse.challenge, publicKeyBase64)
+            val deviceId = storage.loadDeviceId(appId) ?: UUID.randomUUID().toString()
+
+            AuthLogger.debug(tag, "Requesting attestation proof")
+            val proof = attestationProvider.generateProof(nonce) ?: "none"
 
             // Step 4: Register with server
             storage.saveState(DeviceAuthState.REGISTERING, appId)
-            val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKeyBytes)
             val request = RegisterRequest(
                 appId = appId,
+                deviceId = deviceId,
                 challenge = challengeResponse.challenge,
                 publicKey = publicKeyBase64,
-                attestation = attestation,
-                deviceMetadata = DeviceMetadata()
+                platform = "android",
+                proof = proof
             )
-            AuthLogger.debug(tag, "Registering with server")
+            AuthLogger.debug(tag, "Registering with server (proof=${if (proof == "none") "none" else "${proof.length} chars"})")
             val response = network.registerDevice(request)
 
             // Step 5: Store device ID
@@ -83,18 +91,14 @@ class DeviceRegistrar(
             ?: throw SynheartAuthError.NotRegistered()
 
         try {
-            // Generate new key pair
             val newPublicKeyBytes = keyManager.generateNextKeyPair(appId)
             val newPublicKeyBase64 = Base64.getEncoder().encodeToString(newPublicKeyBytes)
 
-            // Sign new public key with old key (proof of possession)
             val oldKeySignatureBytes = keyManager.sign(newPublicKeyBytes, appId)
             val oldKeySignatureBase64 = Base64.getEncoder().encodeToString(oldKeySignatureBytes)
 
-            // Transition to registering state
             storage.saveState(DeviceAuthState.REGISTERING, appId)
 
-            // Send rotation request
             val request = RotateKeyRequest(
                 appId = appId,
                 deviceId = deviceId,
@@ -104,12 +108,10 @@ class DeviceRegistrar(
             AuthLogger.debug(tag, "Rotating key with server")
             val response = network.rotateKey(request)
 
-            // Verify server response
             if (response.status != "ok" && response.status != "success") {
                 throw SynheartAuthError.ServerError("ROTATION_FAILED", "Server returned: ${response.status}")
             }
 
-            // Atomic promotion
             keyManager.promoteNextKey(appId)
             storage.saveState(DeviceAuthState.REGISTERED, appId)
 
@@ -131,5 +133,13 @@ class DeviceRegistrar(
     private fun cleanup(appId: String) {
         try { keyManager.deleteKey(appId) } catch (_: Exception) {}
         try { storage.deleteAll(appId) } catch (_: Exception) {}
+    }
+
+    /// nonce = SHA256(challenge + public_key) per attestation flow spec
+    /// Play Integrity requires URL-safe base64 without padding
+    private fun computeNonce(challenge: String, publicKey: String): String {
+        val input = challenge + publicKey
+        val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
     }
 }
