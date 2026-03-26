@@ -1,14 +1,14 @@
-package com.synheart.auth
+package ai.synheart.auth
 
-import com.synheart.auth.crypto.MockKeyManager
-import com.synheart.auth.models.DeviceAuthState
-import com.synheart.auth.models.RegistrationResult
-import com.synheart.auth.models.SynheartAuthError
-import com.synheart.auth.network.ChallengeResponse
-import com.synheart.auth.network.MockAuthNetworkClient
-import com.synheart.auth.network.RegisterResponse
-import com.synheart.auth.network.RotateKeyResponse
-import com.synheart.auth.storage.StorageManager
+import ai.synheart.auth.crypto.MockKeyManager
+import ai.synheart.auth.models.DeviceAuthState
+import ai.synheart.auth.models.RegistrationResult
+import ai.synheart.auth.models.SynheartAuthError
+import ai.synheart.auth.network.ChallengeResponse
+import ai.synheart.auth.network.MockAuthNetworkClient
+import ai.synheart.auth.network.RegisterResponse
+import ai.synheart.auth.network.RotateKeyResponse
+import ai.synheart.auth.storage.StorageManager
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -85,7 +85,7 @@ class SynheartAuthTest {
         auth.registerDevice(appId)
         network.rotateKeyResponse = RotateKeyResponse("ok")
         val result = auth.rotateKey(appId)
-        assertEquals(com.synheart.auth.models.RotationResult.RotationStatus.SUCCESS, result.status)
+        assertEquals(ai.synheart.auth.models.RotationResult.RotationStatus.SUCCESS, result.status)
         assertTrue(auth.isRegistered(appId))
     }
 

@@ -1,9 +1,9 @@
-package com.synheart.auth.crypto
+package ai.synheart.auth.crypto
 
-import com.synheart.auth.internal.ClockSkewTracker
-import com.synheart.auth.models.SignedHeaders
-import com.synheart.auth.models.SynheartAuthError
-import com.synheart.auth.storage.StorageManaging
+import ai.synheart.auth.internal.ClockSkewTracker
+import ai.synheart.auth.models.SignedHeaders
+import ai.synheart.auth.models.SynheartAuthError
+import ai.synheart.auth.storage.StorageManaging
 import java.util.Base64
 import java.util.UUID
 

@@ -1,4 +1,4 @@
-package com.synheart.auth.models
+package ai.synheart.auth.models
 
 data class RegistrationResult(
     val status: RegistrationStatus,

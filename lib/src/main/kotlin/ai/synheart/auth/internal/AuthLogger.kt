@@ -1,4 +1,4 @@
-package com.synheart.auth.internal
+package ai.synheart.auth.internal
 
 import java.util.logging.Level
 import java.util.logging.Logger

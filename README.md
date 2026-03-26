@@ -23,7 +23,7 @@ Add to your `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.synheart:synheart-auth:1.0.0")
+    implementation("ai.synheart:synheart-auth:1.0.0")
 }
 ```
 
@@ -38,7 +38,7 @@ dependencies {
 ## Quick Start
 
 ```kotlin
-import com.synheart.auth.SynheartAuth
+import ai.synheart.auth.SynheartAuth
 
 // 1. Configure once at app launch
 SynheartAuth().configure("https://auth.synheart.ai")

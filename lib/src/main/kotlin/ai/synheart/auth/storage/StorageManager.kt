@@ -1,6 +1,6 @@
-package com.synheart.auth.storage
+package ai.synheart.auth.storage
 
-import com.synheart.auth.models.DeviceAuthState
+import ai.synheart.auth.models.DeviceAuthState
 
 interface StorageManaging {
     fun saveDeviceId(deviceId: String, appId: String)

@@ -1,4 +1,4 @@
-package com.synheart.auth.models
+package ai.synheart.auth.models
 
 sealed class SynheartAuthError(message: String, cause: Throwable? = null) : Exception(message, cause) {
     class NetworkError(message: String) : SynheartAuthError(message)

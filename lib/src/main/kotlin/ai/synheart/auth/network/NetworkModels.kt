@@ -1,4 +1,4 @@
-package com.synheart.auth.network
+package ai.synheart.auth.network
 
 import org.json.JSONObject
 

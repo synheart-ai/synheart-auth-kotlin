@@ -1,10 +1,10 @@
-package com.synheart.auth.registration
+package ai.synheart.auth.registration
 
-import com.synheart.auth.crypto.KeyManaging
-import com.synheart.auth.internal.AuthLogger
-import com.synheart.auth.models.*
-import com.synheart.auth.network.*
-import com.synheart.auth.storage.StorageManaging
+import ai.synheart.auth.crypto.KeyManaging
+import ai.synheart.auth.internal.AuthLogger
+import ai.synheart.auth.models.*
+import ai.synheart.auth.network.*
+import ai.synheart.auth.storage.StorageManaging
 import java.util.Base64
 
 class DeviceRegistrar(

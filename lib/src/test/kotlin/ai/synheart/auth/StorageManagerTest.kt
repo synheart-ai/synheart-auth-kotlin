@@ -1,7 +1,7 @@
-package com.synheart.auth
+package ai.synheart.auth
 
-import com.synheart.auth.models.DeviceAuthState
-import com.synheart.auth.storage.StorageManager
+import ai.synheart.auth.models.DeviceAuthState
+import ai.synheart.auth.storage.StorageManager
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test

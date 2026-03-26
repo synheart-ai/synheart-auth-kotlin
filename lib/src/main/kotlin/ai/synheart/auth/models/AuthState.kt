@@ -1,4 +1,4 @@
-package com.synheart.auth.models
+package ai.synheart.auth.models
 
 enum class DeviceAuthState(val value: String) {
     UNREGISTERED("unregistered"),

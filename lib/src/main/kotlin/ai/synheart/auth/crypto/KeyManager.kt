@@ -1,6 +1,6 @@
-package com.synheart.auth.crypto
+package ai.synheart.auth.crypto
 
-import com.synheart.auth.models.SynheartAuthError
+import ai.synheart.auth.models.SynheartAuthError
 import java.security.*
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
@@ -19,8 +19,8 @@ interface KeyManaging {
 class SoftwareKeyManager : KeyManaging {
     private val keys = mutableMapOf<String, KeyPair>()
 
-    private fun tag(appId: String): String = "com.synheart.auth.$appId"
-    private fun nextTag(appId: String): String = "com.synheart.auth.${appId}_next"
+    private fun tag(appId: String): String = "ai.synheart.auth.$appId"
+    private fun nextTag(appId: String): String = "ai.synheart.auth.${appId}_next"
 
     override fun generateKeyPair(appId: String): ByteArray {
         val kp = createP256KeyPair()

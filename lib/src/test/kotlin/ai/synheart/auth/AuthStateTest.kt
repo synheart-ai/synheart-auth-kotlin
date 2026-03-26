@@ -1,7 +1,7 @@
-package com.synheart.auth
+package ai.synheart.auth
 
-import com.synheart.auth.models.DeviceAuthState
-import com.synheart.auth.models.SynheartAuthError
+import ai.synheart.auth.models.DeviceAuthState
+import ai.synheart.auth.models.SynheartAuthError
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
