@@ -1,6 +1,6 @@
-package com.synheart.auth.network
+package ai.synheart.auth.network
 
-import com.synheart.auth.models.SynheartAuthError
+import ai.synheart.auth.models.SynheartAuthError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.OutputStreamWriter

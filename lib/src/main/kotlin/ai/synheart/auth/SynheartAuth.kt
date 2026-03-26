@@ -1,16 +1,16 @@
-package com.synheart.auth
+package ai.synheart.auth
 
-import com.synheart.auth.crypto.KeyManaging
-import com.synheart.auth.crypto.RequestSigner
-import com.synheart.auth.crypto.SoftwareKeyManager
-import com.synheart.auth.internal.AuthLogger
-import com.synheart.auth.internal.ClockSkewTracker
-import com.synheart.auth.models.*
-import com.synheart.auth.network.AuthNetworkClient
-import com.synheart.auth.network.AuthNetworking
-import com.synheart.auth.registration.DeviceRegistrar
-import com.synheart.auth.storage.StorageManager
-import com.synheart.auth.storage.StorageManaging
+import ai.synheart.auth.crypto.KeyManaging
+import ai.synheart.auth.crypto.RequestSigner
+import ai.synheart.auth.crypto.SoftwareKeyManager
+import ai.synheart.auth.internal.AuthLogger
+import ai.synheart.auth.internal.ClockSkewTracker
+import ai.synheart.auth.models.*
+import ai.synheart.auth.network.AuthNetworkClient
+import ai.synheart.auth.network.AuthNetworking
+import ai.synheart.auth.registration.DeviceRegistrar
+import ai.synheart.auth.storage.StorageManager
+import ai.synheart.auth.storage.StorageManaging
 
 class SynheartAuth private constructor(
     private val keyManager: KeyManaging,

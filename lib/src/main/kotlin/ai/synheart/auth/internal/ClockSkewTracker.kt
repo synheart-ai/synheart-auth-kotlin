@@ -1,4 +1,4 @@
-package com.synheart.auth.internal
+package ai.synheart.auth.internal
 
 import java.time.Instant
 import java.time.ZoneOffset

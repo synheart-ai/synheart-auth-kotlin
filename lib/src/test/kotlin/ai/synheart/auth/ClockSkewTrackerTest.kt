@@ -1,6 +1,6 @@
-package com.synheart.auth
+package ai.synheart.auth
 
-import com.synheart.auth.internal.ClockSkewTracker
+import ai.synheart.auth.internal.ClockSkewTracker
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test

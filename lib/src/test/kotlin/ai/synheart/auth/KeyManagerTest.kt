@@ -1,8 +1,8 @@
-package com.synheart.auth
+package ai.synheart.auth
 
-import com.synheart.auth.crypto.MockKeyManager
-import com.synheart.auth.crypto.SoftwareKeyManager
-import com.synheart.auth.models.SynheartAuthError
+import ai.synheart.auth.crypto.MockKeyManager
+import ai.synheart.auth.crypto.SoftwareKeyManager
+import ai.synheart.auth.models.SynheartAuthError
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
