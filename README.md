@@ -51,7 +51,7 @@ println("Device ID: ${result.deviceId}")
 val headers = synheartAuth.signRequest(
     appId = "com.myapp",
     method = "POST",
-    path = "/v1/ingest/hsi",
+    path = "/ingest/v1/hsi",
     bodyBytes = bodyJson.toByteArray()
 )
 // Apply headers to your HTTP request
