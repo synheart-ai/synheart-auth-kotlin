@@ -51,8 +51,8 @@ class DeviceRegistrarTest {
         assertEquals(appId, req.appId)
         assertEquals("test-challenge-abc", req.challenge)
         assertTrue(req.publicKey.isNotEmpty())
-        assertNull(req.attestation) // No App Attest on Android
-        assertEquals("Android", req.deviceMetadata.platform)
+        assertEquals("none", req.proof) // NoOp attestation returns null, registrar converts to "none"
+        assertEquals("android", req.platform)
     }
 
     @Test
