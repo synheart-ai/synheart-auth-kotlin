@@ -9,6 +9,14 @@ data class ChallengeRequest(val appId: String) {
 }
 
 data class ChallengeResponse(val challenge: String, val expiresAt: String) {
+    /** Check if the challenge has expired based on expiresAt timestamp. */
+    val isExpired: Boolean
+        get() = try {
+            java.time.Instant.parse(expiresAt).isBefore(java.time.Instant.now())
+        } catch (_: Exception) {
+            false // If we can't parse, let the server decide
+        }
+
     companion object {
         fun fromJson(json: String): ChallengeResponse {
             val obj = JSONObject(json)
@@ -22,7 +30,7 @@ data class ChallengeResponse(val challenge: String, val expiresAt: String) {
                 val seconds = data.getLong("expires_in")
                 java.time.Instant.now().plusSeconds(seconds).toString()
             } else {
-                java.time.Instant.now().plusSeconds(300).toString()
+                java.time.Instant.now().plusSeconds(90).toString() // RFC default: 90s
             }
             return ChallengeResponse(challenge = challenge, expiresAt = expiresAt)
         }
