@@ -8,7 +8,6 @@ import ai.synheart.auth.storage.StorageManaging
 import kotlinx.coroutines.delay
 import java.security.MessageDigest
 import java.util.Base64
-import java.util.UUID
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.random.Random
@@ -55,11 +54,10 @@ class DeviceRegistrar(
                 "Public key generated: bytes=${publicKeyBytes.size} base64=$publicKeyBase64"
             )
             val nonce = computeNonce(challengeResponse.challenge, publicKeyBase64)
-            AuthLogger.debug(tag, "Computed nonce (base64url): $nonce")
-            val deviceId = storage.loadDeviceId(appId) ?: UUID.randomUUID().toString()
 
-            AuthLogger.debug(tag, "Requesting attestation proof")
-            val proof = attestationProvider.generateProof(nonce) ?: "none"
+
+            AuthLogger.debug(tag, "Requesting attestation token")
+            val attestation = attestationProvider.generateProof(nonce)
 
             // Validate challenge hasn't expired before registering (90s TTL per RFC)
             if (challengeResponse.isExpired) {
@@ -70,14 +68,16 @@ class DeviceRegistrar(
             storage.saveState(DeviceAuthState.REGISTERING, appId)
             val request = RegisterRequest(
                 appId = appId,
-                deviceId = deviceId,
                 challenge = challengeResponse.challenge,
                 publicKey = publicKeyBase64,
-                platform = "android",
-                proof = proof
+                attestation = attestation,
+                deviceMetadata = DeviceMetadata(platform = "Android")
             )
-            AuthLogger.debug(tag, "Registering with server (proof=${if (proof == "none") "none" else "${proof.length} chars"})")
-            val response = withRetry { network.registerDevice(request) }
+            AuthLogger.debug(
+                tag,
+                "Registering with server (attestation=${if (attestation == null) "none" else "${attestation.length} chars"})",
+            )
+            val response = network.registerDevice(request)
 
             // Step 5: Store device ID
             storage.saveDeviceId(response.deviceId, appId)

@@ -18,11 +18,25 @@ data class ChallengeResponse(val challenge: String, val expiresAt: String) {
         }
 
     companion object {
+        private fun resolveChallenge(data: JSONObject): String {
+            val direct = data.optString("challenge", "")
+            if (direct.isNotEmpty()) return direct
+            val nonce = data.optString("challenge_nonce", "")
+            if (nonce.isNotEmpty()) return nonce
+            val challengeId = data.optString("challenge_id", "")
+            if (challengeId.isNotEmpty()) return challengeId
+
+            val preview = data.toString().take(240)
+            throw IllegalArgumentException(
+                "No challenge/challenge_nonce/challenge_id in challenge response. payload=$preview",
+            )
+        }
+
         fun fromJson(json: String): ChallengeResponse {
             val obj = JSONObject(json)
             // API wraps response in {"success":true,"data":{...}}
             val data = if (obj.has("data")) obj.getJSONObject("data") else obj
-            val challenge = data.getString("challenge")
+            val challenge = resolveChallenge(data)
             // API returns expires_in (seconds) instead of expires_at (ISO timestamp)
             val expiresAt = if (data.has("expires_at")) {
                 data.getString("expires_at")
@@ -39,21 +53,34 @@ data class ChallengeResponse(val challenge: String, val expiresAt: String) {
 
 data class RegisterRequest(
     val appId: String,
-    val deviceId: String,
     val challenge: String,
     val publicKey: String,
-    val platform: String,
-    val proof: String?
+    val attestation: String?,
+    val deviceMetadata: DeviceMetadata
 ) {
     fun toJson(): String = JSONObject().apply {
         put("app_id", appId)
-        put("device_id", deviceId)
         put("challenge", challenge)
         put("public_key", publicKey)
-        put("platform", platform)
-        put("proof", proof)
+        put("attestation", attestation)
+        put(
+            "device_metadata",
+            JSONObject().apply {
+                put("platform", deviceMetadata.platform)
+                deviceMetadata.osVersion?.let { put("os_version", it) }
+                deviceMetadata.model?.let { put("model", it) }
+                deviceMetadata.secureEnclave?.let { put("secure_enclave", it) }
+            },
+        )
     }.toString()
 }
+
+data class DeviceMetadata(
+    val platform: String,
+    val osVersion: String? = null,
+    val model: String? = null,
+    val secureEnclave: Boolean? = null,
+)
 
 data class RegisterResponse(val deviceId: String, val status: String) {
     companion object {

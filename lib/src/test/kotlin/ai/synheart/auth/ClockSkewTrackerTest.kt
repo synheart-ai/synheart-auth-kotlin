@@ -19,10 +19,10 @@ class ClockSkewTrackerTest {
     }
 
     @Test
-    fun `corrected timestamp returns ISO 8601 format`() {
+    fun `corrected timestamp returns unix epoch seconds`() {
         val ts = tracker.correctedTimestamp()
-        assertTrue(ts.contains("T"))
-        assertTrue(ts.endsWith("Z"))
+        assertTrue(ts.toLongOrNull() != null)
+        assertTrue(ts.length >= 10)
     }
 
     @Test

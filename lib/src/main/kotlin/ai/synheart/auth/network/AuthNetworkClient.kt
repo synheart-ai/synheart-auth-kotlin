@@ -60,6 +60,7 @@ class AuthNetworkClient(private val baseUrl: String) : AuthNetworking {
                 conn.setRequestProperty("X-Synheart-Dev-Mode", "true")
             }
             conn.doOutput = true
+            AuthLogger.debug(tag, "POST ${url} bodyBytes=${body.toByteArray().size} (body redacted)")
 
             OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
 
@@ -67,11 +68,14 @@ class AuthNetworkClient(private val baseUrl: String) : AuthNetworking {
             AuthLogger.debug(tag, "HTTP $code $path")
             if (code in 200..299) {
                 val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                AuthLogger.debug(tag, "HTTP $code $path responseChars=${text.length}")
+                val preview = text.take(240)
+                AuthLogger.debug(tag, "HTTP $code ${url} preview=$preview")
                 return text
             }
 
             val errorBody = conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            val errPreview = errorBody.take(240)
+            AuthLogger.warn(tag, "HTTP $code ${url} errorPreview=$errPreview")
             if (errorBody.isNotEmpty()) {
                 val preview = if (errorBody.length <= 200) errorBody else errorBody.substring(0, 200) + "..."
                 AuthLogger.warn(tag, "HTTP $code $path errorBodyChars=${errorBody.length} preview=$preview")
