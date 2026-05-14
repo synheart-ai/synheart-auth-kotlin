@@ -1,3 +1,5 @@
+🌐 Official website: [synheart.ai](https://synheart.ai) — Human State Interface (HSI) infrastructure for developers and AI systems.
+
 # SynheartAuth (Kotlin)
 
 [![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://github.com/synheart-ai/synheart-auth-kotlin)
