@@ -5,7 +5,9 @@ import ai.synheart.auth.internal.AuthLogger
 import ai.synheart.auth.models.*
 import ai.synheart.auth.network.*
 import ai.synheart.auth.storage.StorageManaging
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import java.util.Base64
 import kotlin.math.min
@@ -61,9 +63,19 @@ class DeviceRegistrar(
                 "Challenge received: challenge=${challengeResponse.challenge} expiresAt=${challengeResponse.expiresAt}"
             )
 
-            // Step 2: Generate key pair
+            // Step 2: Generate key pair.
+            //
+            // `KeyManaging.generateKeyPair` is a synchronous (non-suspend)
+            // call into Android Keystore. On API 28+ devices with StrongBox
+            // hardware, the first key generation can take 1–2 s — long
+            // enough to trip the ANR watchdog if it happens on the UI
+            // thread. We don't fully control which thread the FFI runtime
+            // hands us, so be defensive and dispatch the blocking call to
+            // `Dispatchers.IO` explicitly.
             AuthLogger.debug(tag, "Generating key pair")
-            val publicKeyBytes = keyManager.generateKeyPair(appId)
+            val publicKeyBytes = withContext(Dispatchers.IO) {
+                keyManager.generateKeyPair(appId)
+            }
             storage.saveState(DeviceAuthState.KEY_READY, appId)
 
             // Step 3: Compute nonce and generate attestation proof
@@ -133,10 +145,19 @@ class DeviceRegistrar(
         }
 
         try {
-            val newPublicKeyBytes = keyManager.generateNextKeyPair(appId)
+            // Same threading discipline as `register()` — Keystore key
+            // generation and signing are synchronous calls that may block
+            // for hundreds of ms (and seconds for StrongBox-backed keys).
+            // Force them onto `Dispatchers.IO` so a rotate triggered from
+            // a UI-thread coroutine doesn't park the main thread.
+            val newPublicKeyBytes = withContext(Dispatchers.IO) {
+                keyManager.generateNextKeyPair(appId)
+            }
             val newPublicKeyBase64 = Base64.getEncoder().encodeToString(newPublicKeyBytes)
 
-            val oldKeySignatureBytes = keyManager.sign(newPublicKeyBytes, appId)
+            val oldKeySignatureBytes = withContext(Dispatchers.IO) {
+                keyManager.sign(newPublicKeyBytes, appId)
+            }
             val oldKeySignatureBase64 = Base64.getEncoder().encodeToString(oldKeySignatureBytes)
 
             storage.saveState(DeviceAuthState.REGISTERING, appId)
