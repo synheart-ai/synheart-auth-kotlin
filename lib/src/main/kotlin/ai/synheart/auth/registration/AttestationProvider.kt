@@ -1,6 +1,8 @@
 package ai.synheart.auth.registration
 
 import ai.synheart.auth.internal.AuthLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Interface for platform-specific attestation proof generation.
@@ -56,8 +58,18 @@ class PlayIntegrityAttestationProvider private constructor(
         }
     }
 
-    override suspend fun generateProof(nonce: String): String? {
-        return try {
+    override suspend fun generateProof(nonce: String): String? = withContext(Dispatchers.IO) {
+        // CRITICAL: dispatch onto `Dispatchers.IO`. Both blocking operations
+        // below — the IntegrityService bind (`requestIntegrityToken`) and the
+        // synchronous `Tasks.await(...)` that follows — can park the calling
+        // thread for several seconds on a cold boot. When `register()` is
+        // invoked from a JNI / FFI thread that happens to be the Android main
+        // thread (which downstream consumers don't always control directly),
+        // the calling thread is the UI thread and the ANR watchdog fires
+        // (signal 3 / "Wrote stack traces to tombstoned") after ~5s. Forcing
+        // `Dispatchers.IO` here makes the dispatch contract explicit at the
+        // leaf, independent of how the caller's coroutine context was set up.
+        try {
             // Use reflection to call Play Integrity APIs without compile-time dependency.
             // IntegrityManagerFactory.create(context)
             val factoryClass = Class.forName("com.google.android.play.core.integrity.IntegrityManagerFactory")
@@ -74,7 +86,9 @@ class PlayIntegrityAttestationProvider private constructor(
             val requestMethod = integrityManager.javaClass.getMethod("requestIntegrityToken", request.javaClass)
             val task = requestMethod.invoke(integrityManager, request)
 
-            // Await the Task using Tasks.await() (blocking, but we're in a coroutine)
+            // Await the Task using Tasks.await() — safe to block here because
+            // the surrounding `withContext(Dispatchers.IO)` guarantees we're
+            // not on the main thread.
             val tasksClass = Class.forName("com.google.android.gms.tasks.Tasks")
             val awaitMethod = tasksClass.getMethod("await", Class.forName("com.google.android.gms.tasks.Task"))
             val response = awaitMethod.invoke(null, task)
