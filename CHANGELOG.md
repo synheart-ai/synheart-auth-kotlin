@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-05-26
+
+### Fixed
+- Android: `PlayIntegrityAttestationProvider.generateProof` now wraps
+  its body in `withContext(Dispatchers.IO)`. Both the IntegrityService
+  bind (`requestIntegrityToken`) and the subsequent
+  synchronous `Tasks.await(...)` can park the calling thread for one
+  to two seconds on a cold boot — long enough to trip the ANR
+  watchdog when the caller's coroutine context happens to resolve to
+  the main thread.
+- Android: `DeviceRegistrar` wraps the three synchronous
+  `KeyManaging` calls (`generateKeyPair`, `generateNextKeyPair`,
+  `sign`) in `withContext(Dispatchers.IO)`. Android Keystore
+  key generation against StrongBox-backed hardware (API 28+) can
+  take one to two seconds for the first key on a device, with the
+  same ANR risk if it lands on the UI thread.
+
+The dispatch contract is now explicit at the leaf, independent of how
+upstream callers structure their coroutine context.
+
 ## [0.1.1] - 2026-05-08
 
 Source-available release. Maven Central artifact `ai.synheart:synheart-auth:0.1.0`
