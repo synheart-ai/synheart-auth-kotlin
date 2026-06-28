@@ -3,6 +3,9 @@ package ai.synheart.auth.registration
 import ai.synheart.auth.internal.AuthLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.lang.reflect.InvocationTargetException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Interface for platform-specific attestation proof generation.
@@ -50,6 +53,19 @@ class PlayIntegrityAttestationProvider private constructor(
         private const val TAG = "PlayIntegrity"
 
         /**
+         * Hard cap on how long [generateProof] blocks waiting for the Play
+         * Integrity Task to resolve. Play Integrity is contractually obligated
+         * to invoke a success/failure listener, but a stalled IntegrityService
+         * bind — no Play Store, an unlinked package, or a sideloaded debug build
+         * whose cloud project can't be resolved — can leave the Task pending
+         * indefinitely. Without a cap the blocking `Tasks.await` never returns
+         * and registration never reaches a terminal state. Generous enough to
+         * absorb a genuine cold bind on a slow network, short enough that a hung
+         * bind fails fast and lets the caller fall back / retry.
+         */
+        private const val INTEGRITY_TIMEOUT_SECONDS = 30L
+
+        /**
          * Create a PlayIntegrityAttestationProvider.
          * @param context Android application Context
          */
@@ -86,12 +102,21 @@ class PlayIntegrityAttestationProvider private constructor(
             val requestMethod = integrityManager.javaClass.getMethod("requestIntegrityToken", request.javaClass)
             val task = requestMethod.invoke(integrityManager, request)
 
-            // Await the Task using Tasks.await() — safe to block here because
-            // the surrounding `withContext(Dispatchers.IO)` guarantees we're
-            // not on the main thread.
+            // Await the Task using the bounded `Tasks.await(Task, long, TimeUnit)`
+            // overload — safe to block here because the surrounding
+            // `withContext(Dispatchers.IO)` guarantees we're not on the main
+            // thread. The timeout (see INTEGRITY_TIMEOUT_SECONDS) ensures a
+            // stalled IntegrityService bind raises TimeoutException instead of
+            // parking the thread forever; the unbounded one-arg overload would
+            // never return on a hung bind.
             val tasksClass = Class.forName("com.google.android.gms.tasks.Tasks")
-            val awaitMethod = tasksClass.getMethod("await", Class.forName("com.google.android.gms.tasks.Task"))
-            val response = awaitMethod.invoke(null, task)
+            val awaitMethod = tasksClass.getMethod(
+                "await",
+                Class.forName("com.google.android.gms.tasks.Task"),
+                Long::class.javaPrimitiveType,
+                TimeUnit::class.java,
+            )
+            val response = awaitMethod.invoke(null, task, INTEGRITY_TIMEOUT_SECONDS, TimeUnit.SECONDS)
 
             // response.token()
             val token = response.javaClass.getMethod("token").invoke(response) as? String
@@ -99,6 +124,20 @@ class PlayIntegrityAttestationProvider private constructor(
             token
         } catch (e: ClassNotFoundException) {
             AuthLogger.info(TAG, "Play Integrity not available: ${e.message}")
+            null
+        } catch (e: InvocationTargetException) {
+            // Reflection wraps any exception thrown by the invoked method.
+            // A TimeoutException here means the IntegrityService bind stalled
+            // past INTEGRITY_TIMEOUT_SECONDS — treat as attestation unavailable.
+            if (e.cause is TimeoutException) {
+                AuthLogger.info(
+                    TAG,
+                    "Play Integrity timed out after ${INTEGRITY_TIMEOUT_SECONDS}s " +
+                        "(no response from IntegrityService) — returning null",
+                )
+            } else {
+                AuthLogger.info(TAG, "Play Integrity failed: ${e.cause?.message ?: e.message}")
+            }
             null
         } catch (e: Exception) {
             AuthLogger.info(TAG, "Play Integrity failed: ${e.cause?.message ?: e.message}")

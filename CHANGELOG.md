@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-06-28
+
+### Fixed
+- Android: `PlayIntegrityAttestationProvider.generateProof` now awaits the
+  Play Integrity `Task` with a 30-second timeout (the bounded
+  `Tasks.await(Task, long, TimeUnit)` overload) instead of the unbounded
+  one-argument `Tasks.await(Task)`. Play Integrity is supposed to invoke a
+  success/failure listener, but a stalled `IntegrityService` bind — no Play
+  Store, an unlinked package, or a sideloaded debug build whose cloud project
+  can't be resolved — can leave the `Task` pending indefinitely, parking the
+  calling thread forever so registration never reaches a terminal state. A
+  timeout now raises `TimeoutException`, which is treated as "attestation
+  unavailable" (`generateProof` returns `null`), letting the caller fall back
+  or retry. This complements 0.1.2 (which moved the blocking work off the main
+  thread to avoid ANRs); that addressed *slow* resolution, this addresses
+  resolution that *never arrives*.
+
 ## [0.1.2] - 2026-05-26
 
 ### Fixed
