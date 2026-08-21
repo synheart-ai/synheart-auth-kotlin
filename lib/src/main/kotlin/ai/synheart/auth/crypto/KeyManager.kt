@@ -50,69 +50,116 @@ class HardwareKeyManager(private val keyStore: KeyStore) : KeyManaging {
         return generateKeyForAlias(nextTag(appId))
     }
 
+    /**
+     * Create a hardware-backed P-256 signing key, preferring StrongBox and
+     * falling back to the TEE.
+     *
+     * StrongBox is an *upgrade*, not a requirement: a key in the TEE is still
+     * hardware-backed and non-exportable, which is what device identity needs.
+     * So a StrongBox failure must never fail the whole operation — it must
+     * retry without it.
+     *
+     * The previous implementation tried to detect that case by matching
+     * `StrongBoxUnavailableException` at cause depth 1. That misses the shape
+     * Android actually throws on a TEE-only device: `KeyPairGenerator` reports
+     * `java.security.ProviderException: Failed to generated key pair.` with the
+     * StrongBox cause nested deeper or absent entirely. On an SM-A235F
+     * (`hardware_keystore=4`, no `strongbox_keystore`) the match failed, the
+     * fallback never ran, and device registration was impossible — which is
+     * most mid-range Android hardware, not an edge case.
+     *
+     * Rather than enumerate exception shapes, this attempts StrongBox and
+     * retries on the TEE after ANY failure. It only gives up when the TEE
+     * attempt also fails, and then reports both causes.
+     */
     private fun generateKeyForAlias(alias: String): ByteArray {
-        try {
-            // Use Android Keystore KeyGenParameterSpec via reflection to avoid compile-time
-            // dependency on android.* classes in JVM tests. In the actual Android build,
-            // these classes are available at runtime.
-            val specBuilderClass = Class.forName("android.security.keystore.KeyGenParameterSpec\$Builder")
-            val purposeSign = 4 // KeyProperties.PURPOSE_SIGN = 4
-            val builder = specBuilderClass
-                .getConstructor(String::class.java, Int::class.javaPrimitiveType)
-                .newInstance(alias, purposeSign)
-
-            // .setDigests(KeyProperties.DIGEST_SHA256)
-            val digestSha256 = "SHA-256"
-            specBuilderClass.getMethod("setDigests", Array<String>::class.java)
-                .invoke(builder, arrayOf(digestSha256))
-
-            // .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-            specBuilderClass.getMethod("setAlgorithmParameterSpec", java.security.spec.AlgorithmParameterSpec::class.java)
-                .invoke(builder, ECGenParameterSpec("secp256r1"))
-
-            // Try StrongBox first (API 28+)
-            try {
-                specBuilderClass.getMethod("setIsStrongBoxBacked", Boolean::class.javaPrimitiveType)
-                    .invoke(builder, true)
-            } catch (_: NoSuchMethodException) {
-                // StrongBox not available (pre-API 28), TEE fallback is automatic
-            } catch (_: Exception) {
-                // StrongBox failed, TEE fallback
-            }
-
-            val spec = specBuilderClass.getMethod("build").invoke(builder)
-                as java.security.spec.AlgorithmParameterSpec
-
-            val gen = KeyPairGenerator.getInstance("EC", "AndroidKeyStore")
-            gen.initialize(spec)
-            val kp = gen.generateKeyPair()
-            return exportPublicKey(kp.public)
+        val strongBoxFailure = try {
+            return generateKeyForAlias(alias, useStrongBox = true)
         } catch (e: Exception) {
-            // If StrongBox was set but device doesn't support it, retry without
-            if (e.cause?.javaClass?.name == "android.security.keystore.StrongBoxUnavailableException") {
-                return generateKeyForAliasFallback(alias)
-            }
-            throw SynheartAuthError.CryptoError("Failed to generate hardware key: ${e.message}")
+            e
+        }
+
+        // A failed generation can leave a partial entry behind, and Keystore
+        // will not overwrite one cleanly on every OEM. Clear it so the retry
+        // starts from nothing.
+        runCatching { if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias) }
+
+        return try {
+            generateKeyForAlias(alias, useStrongBox = false)
+        } catch (e: Exception) {
+            // Both causes, because either can be the real story: the TEE
+            // message alone hides that StrongBox was tried first, and the
+            // StrongBox message alone reads as a StrongBox problem when the
+            // device simply has no usable keystore.
+            throw SynheartAuthError.CryptoError(
+                "Failed to generate hardware key for alias=$alias. " +
+                    "StrongBox attempt: ${describe(strongBoxFailure)}. " +
+                    "TEE attempt: ${describe(e)}",
+                cause = e,
+            )
         }
     }
 
-    private fun generateKeyForAliasFallback(alias: String): ByteArray {
-        val specBuilderClass = Class.forName("android.security.keystore.KeyGenParameterSpec\$Builder")
-        val purposeSign = 4
+    /**
+     * One key-generation attempt.
+     *
+     * Built through reflection so this class still loads in JVM unit tests,
+     * where `android.security.keystore` is absent — the Android build resolves
+     * it at runtime.
+     */
+    private fun generateKeyForAlias(alias: String, useStrongBox: Boolean): ByteArray {
+        val specBuilderClass =
+            Class.forName("android.security.keystore.KeyGenParameterSpec\$Builder")
+        val purposeSign = 4 // KeyProperties.PURPOSE_SIGN = 4
         val builder = specBuilderClass
             .getConstructor(String::class.java, Int::class.javaPrimitiveType)
             .newInstance(alias, purposeSign)
+
+        // .setDigests(KeyProperties.DIGEST_SHA256)
         specBuilderClass.getMethod("setDigests", Array<String>::class.java)
             .invoke(builder, arrayOf("SHA-256"))
-        specBuilderClass.getMethod("setAlgorithmParameterSpec", java.security.spec.AlgorithmParameterSpec::class.java)
+
+        // .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+        specBuilderClass
+            .getMethod("setAlgorithmParameterSpec", java.security.spec.AlgorithmParameterSpec::class.java)
             .invoke(builder, ECGenParameterSpec("secp256r1"))
-        // No StrongBox — TEE only
+
+        if (useStrongBox) {
+            // Absent below API 28. Let a genuine reflection failure propagate:
+            // the caller retries without StrongBox anyway, so swallowing it
+            // here only hid which spec was actually built.
+            specBuilderClass.getMethod("setIsStrongBoxBacked", Boolean::class.javaPrimitiveType)
+                .invoke(builder, true)
+        }
+
         val spec = specBuilderClass.getMethod("build").invoke(builder)
             as java.security.spec.AlgorithmParameterSpec
+
         val gen = KeyPairGenerator.getInstance("EC", "AndroidKeyStore")
         gen.initialize(spec)
-        val kp = gen.generateKeyPair()
-        return exportPublicKey(kp.public)
+        return exportPublicKey(gen.generateKeyPair().public)
+    }
+
+    /**
+     * Render a throwable and its cause chain as one line.
+     *
+     * The chain is the point: Android reports StrongBox unavailability as a
+     * `ProviderException` wrapping `StrongBoxUnavailableException`, so a
+     * message-only description drops the very fact that explains the failure.
+     */
+    private fun describe(t: Throwable): String {
+        val parts = mutableListOf<String>()
+        var current: Throwable? = t
+        var depth = 0
+        // Bounded, and tracks seen links: a self-referencing cause chain would
+        // otherwise loop forever inside an error path.
+        val seen = mutableSetOf<Throwable>()
+        while (current != null && depth < 8 && seen.add(current)) {
+            parts += "${current.javaClass.name}: ${current.message}"
+            current = current.cause
+            depth++
+        }
+        return parts.joinToString(" <- ")
     }
 
     override fun sign(data: ByteArray, appId: String): ByteArray {
