@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Android: `HardwareKeyManager` could not generate a signing key on TEE-only
+  devices, so device registration was impossible on most mid-range Android.
+  `generateKeyForAlias` requested StrongBox and tried to recover by matching
+  `StrongBoxUnavailableException` at cause depth 1 — not the shape Android
+  actually throws. `KeyPairGenerator` reports
+  `java.security.ProviderException: Failed to generated key pair.` with the
+  StrongBox cause nested deeper or absent entirely, so on a device without
+  StrongBox (e.g. SM-A235F: `hardware_keystore=4`, no `strongbox_keystore`) the
+  match failed, the TEE fallback never ran, and registration died with
+  `ERR_DEVICE_AUTH: platform crypto: null callback result`. The fallback code
+  itself was correct — nothing could reach it.
+
+  StrongBox is an upgrade, not a requirement: a TEE key is still hardware-backed
+  and non-exportable, which is what device identity needs, so a StrongBox failure
+  must never fail the operation. Rather than enumerate exception shapes — the
+  approach that broke — generation now attempts StrongBox and retries on the TEE
+  after *any* failure, giving up only when both fail and reporting both cause
+  chains. The alias is cleared between attempts, since a failed generation can
+  leave a partial entry that not every OEM overwrites cleanly.
+- `SynheartAuthError.CryptoError` now forwards its cause. The base class already
+  accepted one and `CryptoError` was discarding it, so the underlying Keystore
+  exception — the only actionable detail — never reached callers, leaving them a
+  message and no chain to inspect.
+
 ## [0.1.3] - 2026-06-28
 
 ### Fixed
