@@ -16,6 +16,18 @@ internal object AuthLogger {
         logger.log(level, "[$tag] $message")
     }
 
+    /**
+     * A warning that is emitted even when logging is disabled.
+     *
+     * Reserved for misconfigurations that silently weaken security (a
+     * software key or in-memory identity in a production app), which an
+     * integrator would otherwise only find in the field.
+     */
+    fun securityWarning(tag: String, message: String) {
+        System.err.println("[SynheartAuth][$tag][WARNING] $message")
+        logger.log(Level.WARNING, "[$tag] $message")
+    }
+
     fun debug(tag: String, message: String) {
         emit(Level.FINE, tag, message)
     }

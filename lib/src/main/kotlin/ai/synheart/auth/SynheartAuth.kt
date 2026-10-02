@@ -12,8 +12,10 @@ import ai.synheart.auth.network.AuthNetworking
 import ai.synheart.auth.registration.AttestationProvider
 import ai.synheart.auth.registration.DeviceRegistrar
 import ai.synheart.auth.registration.NoOpAttestationProvider
+import ai.synheart.auth.storage.FileStorageManager
 import ai.synheart.auth.storage.StorageManager
 import ai.synheart.auth.storage.StorageManaging
+import java.io.File
 
 class SynheartAuth private constructor(
     private val keyManager: KeyManaging,
@@ -26,9 +28,19 @@ class SynheartAuth private constructor(
     private val requestSigner = RequestSigner(keyManager, storage, clockSkewTracker)
 
     companion object {
+        private const val TAG = "SynheartAuth"
+
+        /** Sub-directory of the app's no-backup files dir used by [initialize] (Context). */
+        const val STORAGE_DIRECTORY_NAME: String = "synheart_auth"
+
         /**
-         * Default singleton uses SoftwareKeyManager. On Android, call [initialize]
-         * before [configure] to switch to hardware-backed keys.
+         * Default singleton. Until [initialize] is called it uses a
+         * [SoftwareKeyManager] and in-memory [StorageManager] — fine for JVM
+         * tests, NOT for an app: the private key lives in process memory and
+         * the device identity is lost on every restart. On Android call
+         * `SynheartAuth.initialize(context)` before [configure]; the SDK logs a
+         * security warning when an Android app configures it with these
+         * defaults.
          */
         val shared: SynheartAuth = SynheartAuth(
             keyManager = SoftwareKeyManager(),
@@ -39,24 +51,103 @@ class SynheartAuth private constructor(
         )
 
         /**
-         * Initialize the shared instance with a hardware-backed KeyManager.
-         * Call this once from Application.onCreate() on Android:
+         * Production setup for Android. Call once from `Application.onCreate()`,
+         * before [configure]:
          *
-         *     SynheartAuth.initialize(HardwareKeyManager.create())
+         *     SynheartAuth.initialize(applicationContext)
          *
-         * Must be called BEFORE [configure]. On JVM (tests, desktop), skip this
-         * and the default SoftwareKeyManager will be used.
+         * Uses [HardwareKeyManager] (Android Keystore, StrongBox-preferred,
+         * TEE fallback) and a [FileStorageManager] in the app's no-backup files
+         * directory, so `device_id` and registration state survive process
+         * restarts. Private keys stay in the Keystore and are never written to
+         * that storage.
+         *
+         * @param context an `android.content.Context`. Typed as [Any] because
+         *   this library is plain Kotlin/JVM with no Android compile
+         *   dependency (the same reason [HardwareKeyManager] reaches Keystore
+         *   through reflection). Anything else throws [IllegalArgumentException].
+         */
+        fun initialize(context: Any) {
+            initialize(context) { HardwareKeyManager.create() }
+        }
+
+        /** [initialize] with an injectable key manager, so the Context path is testable on the JVM. */
+        internal fun initialize(context: Any, keyManagerFactory: () -> KeyManaging) {
+            val directory = File(noBackupFilesDir(context), STORAGE_DIRECTORY_NAME)
+            initialize(keyManagerFactory(), FileStorageManager(directory))
+        }
+
+        /**
+         * Initialize the shared instance with an explicit key manager and
+         * storage — e.g. `HardwareKeyManager.create()` with your own persistent
+         * [StorageManaging]. Must be called BEFORE [configure] (calling it
+         * afterwards rebuilds the registrar with the new components).
+         */
+        fun initialize(keyManager: KeyManaging, storage: StorageManaging) {
+            shared.replaceInternals(keyManager, storage, ClockSkewTracker())
+            warnOnInsecureDefaults(keyManager, storage)
+        }
+
+        /**
+         * Initialize the shared instance with a key manager and the in-memory
+         * [StorageManager].
+         *
+         * Kept for source compatibility. The device identity does NOT survive
+         * a process restart with this overload — on Android prefer
+         * [initialize] with a `Context`, or pass a persistent
+         * [StorageManaging] to the two-argument overload.
          */
         fun initialize(keyManager: KeyManaging) {
-            val instance = SynheartAuth(
-                keyManager = keyManager,
-                storage = StorageManager(),
-                clockSkewTracker = ClockSkewTracker(),
-                network = null,
-                registrar = null
+            initialize(keyManager, StorageManager())
+        }
+
+        /**
+         * Security warnings for a component set, empty when it is safe for an
+         * app. Only an Android runtime warns: on the JVM the software defaults
+         * are what tests are supposed to use.
+         */
+        internal fun insecureDefaultWarnings(
+            keyManager: KeyManaging,
+            storage: StorageManaging,
+            isAndroid: Boolean = isAndroidRuntime(),
+        ): List<String> {
+            if (!isAndroid) return emptyList()
+            val warnings = mutableListOf<String>()
+            if (keyManager is SoftwareKeyManager) {
+                warnings += "Using SoftwareKeyManager: the device private key is held in process " +
+                    "memory, not the Android Keystore, and is lost on restart. Call " +
+                    "SynheartAuth.initialize(context) before configure()."
+            }
+            if (storage is StorageManager) {
+                warnings += "Using in-memory StorageManager: device_id and registration state are " +
+                    "lost on every process restart. Call SynheartAuth.initialize(context), or " +
+                    "pass a persistent StorageManaging to initialize(keyManager, storage)."
+            }
+            return warnings
+        }
+
+        private fun warnOnInsecureDefaults(keyManager: KeyManaging, storage: StorageManaging) {
+            insecureDefaultWarnings(keyManager, storage).forEach { AuthLogger.securityWarning(TAG, it) }
+        }
+
+        private fun isAndroidRuntime(): Boolean =
+            System.getProperty("java.vm.vendor")?.contains("Android", ignoreCase = true) == true ||
+                runCatching { Class.forName("android.os.Build") }.isSuccess
+
+        /**
+         * `context.getApplicationContext().getNoBackupFilesDir()` (API 21+),
+         * falling back to `getFilesDir()`, via reflection.
+         */
+        internal fun noBackupFilesDir(context: Any): File {
+            fun call(target: Any, name: String): Any? =
+                runCatching { target.javaClass.getMethod(name).invoke(target) }.getOrNull()
+
+            val app = call(context, "getApplicationContext") ?: context
+            val dir = (call(app, "getNoBackupFilesDir") ?: call(app, "getFilesDir")) as? File
+            return dir ?: throw IllegalArgumentException(
+                "SynheartAuth.initialize(context) expects an android.content.Context, got " +
+                    context.javaClass.name
             )
-            // Replace the shared singleton's internal state
-            shared.replaceInternals(instance)
         }
 
         fun createForTesting(
@@ -81,14 +172,27 @@ class SynheartAuth private constructor(
     @Volatile private var _clockSkewTracker: ClockSkewTracker = clockSkewTracker
     @Volatile private var _requestSigner: RequestSigner = requestSigner
 
-    private fun replaceInternals(other: SynheartAuth) {
-        this._keyManager = other._keyManager
-        this._storage = other._storage
-        this._clockSkewTracker = other._clockSkewTracker
-        this._requestSigner = RequestSigner(other._keyManager, other._storage, other._clockSkewTracker)
-    }
-
     private var attestationProvider: AttestationProvider = NoOpAttestationProvider()
+
+    @Synchronized
+    private fun replaceInternals(
+        keyManager: KeyManaging,
+        storage: StorageManaging,
+        clockSkewTracker: ClockSkewTracker,
+    ) {
+        this._keyManager = keyManager
+        this._storage = storage
+        this._clockSkewTracker = clockSkewTracker
+        this._requestSigner = RequestSigner(keyManager, storage, clockSkewTracker)
+        // initialize() after configure() used to leave the registrar on the
+        // previous key manager and storage; rebuild it so every path agrees.
+        val url = baseUrl
+        if (url != null) {
+            val networkClient = AuthNetworkClient(url, clockSkewTracker)
+            this.network = networkClient
+            this.registrar = DeviceRegistrar(keyManager, storage, networkClient, attestationProvider)
+        }
+    }
 
     fun setLoggingEnabled(enabled: Boolean) {
         AuthLogger.enabled = enabled
@@ -111,11 +215,18 @@ class SynheartAuth private constructor(
         val networkClient = AuthNetworkClient(baseUrl, _clockSkewTracker)
         this.network = networkClient
         this.registrar = DeviceRegistrar(_keyManager, _storage, networkClient, this.attestationProvider)
+        warnOnInsecureDefaults(_keyManager, _storage)
         AuthLogger.info("SynheartAuth", "Configured with baseUrl: $baseUrl, keyManager=${_keyManager.javaClass.simpleName}, attestation=${this.attestationProvider.javaClass.simpleName}")
     }
 
+    /**
+     * True when registration state says REGISTERED *and* the signing key is
+     * present. With persistent storage the two can disagree (Keystore cleared,
+     * key invalidated, state restored onto another device); a device without
+     * its key cannot sign and is not registered in any useful sense.
+     */
     fun isRegistered(appId: String): Boolean =
-        _storage.loadState(appId) == DeviceAuthState.REGISTERED
+        _storage.loadState(appId) == DeviceAuthState.REGISTERED && _keyManager.hasKey(appId)
 
     suspend fun registerDevice(appId: String): RegistrationResult {
         val reg = registrar ?: throw SynheartAuthError.NotConfigured()
