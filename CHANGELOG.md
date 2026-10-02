@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Android: signing failed after every successful key rotation with
+  `HardwareKeyManager`. Keystore cannot rename an entry, so `promoteNextKey`
+  deleted the primary alias `synheart_auth_{appId}` and left the new key under
+  `synheart_auth_{appId}_next`, expecting a caller to remap the alias —
+  nothing did, and `sign` / `getPublicKey` / `hasKey` kept resolving the
+  deleted alias ("No key found"). Keys now belong to numbered generations
+  encoded in the alias (`synheart_auth_{appId}`, `…_next`, `…_g{n}`); the
+  lowest generation present is the active key and a pending key is always
+  the next one, so promotion only deletes the active alias and no mapping
+  has to be persisted. Rotating any number of times works. Keys registered
+  on 0.1.4 keep working unchanged, and a device that already rotated on
+  0.1.4 resolves its stranded `_next` key and signs again.
+- `HardwareKeyManager.deleteKey` now removes every key generation for the
+  app id, including a pending rotation key.
+- Key rotation no longer deletes the new key when a local step fails after
+  the server has accepted it.
+- Device identity no longer disappears on process restart when the app
+  uses the new `initialize(context)` (see Added).
+- A registration or rotation interrupted by process death no longer leaves
+  persisted state that blocks `registerDevice` with `RegistrationInProgress`
+  forever; it is repaired on the next `registerDevice` / `rotateKey`.
+- `initialize(...)` after `configure(...)` now takes effect for registration
+  and rotation too (the registrar kept the previous key manager and storage).
+
+### Added
+- `SynheartAuth.initialize(context)`: the production setup on Android —
+  `HardwareKeyManager` plus persistent storage in
+  `Context.getNoBackupFilesDir()/synheart_auth`. `context` is typed `Any`
+  (this library has no Android compile dependency) and must be an
+  `android.content.Context`.
+- `SynheartAuth.initialize(keyManager, storage)`.
+- `FileStorageManager`: persistent `StorageManaging` (one atomically-written
+  file per app id; `device_id`, state and metadata only — never key
+  material).
+- On an Android runtime, an always-on security warning is logged when the
+  SDK is configured with `SoftwareKeyManager` or the in-memory
+  `StorageManager`.
+
+### Changed
+- `isRegistered(appId)` now also requires the signing key to be present,
+  and `registerDevice` re-registers when the stored state is REGISTERED but
+  the key is gone (Keystore cleared, state restored onto another device)
+  instead of returning `ALREADY_REGISTERED` for an identity that cannot sign.
+- `initialize(keyManager)` is unchanged and still uses in-memory storage;
+  it is now documented as such. Migrate Android apps to
+  `initialize(context)`.
+
 ## [0.1.4] - 2026-09-24
 
 ### Fixed

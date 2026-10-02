@@ -46,12 +46,11 @@ dependencies {
 
 ```kotlin
 import ai.synheart.auth.SynheartAuth
-import ai.synheart.auth.crypto.HardwareKeyManager
 
-// 1. Initialize once at app launch with a hardware-backed key manager.
-//    Production apps must do this before `configure(...)` — otherwise
-//    the SDK falls back to SoftwareKeyManager + in-memory storage.
-SynheartAuth.initialize(HardwareKeyManager.create())
+// 1. Initialize once at app launch (Application.onCreate), BEFORE configure(...).
+//    Keys go into the Android Keystore (StrongBox-preferred, TEE fallback) and
+//    device_id / registration state are persisted, so they survive restarts.
+SynheartAuth.initialize(applicationContext)
 
 // 2. Configure the auth service URL
 SynheartAuth.shared.configure("https://api.synheart.ai/auth")
@@ -76,7 +75,10 @@ val headers = SynheartAuth.shared.signRequest(
 
 | Method | Description |
 |--------|-------------|
-| `configure(baseUrl)` | Set the auth service URL. Must be called first. |
+| `SynheartAuth.initialize(context)` | **Production setup on Android.** `HardwareKeyManager` + persistent `FileStorageManager` in the app's no-backup files dir. Call before `configure`. |
+| `SynheartAuth.initialize(keyManager, storage)` | Explicit key manager and storage (e.g. your own persistent `StorageManaging`). |
+| `SynheartAuth.initialize(keyManager)` | Key manager with **in-memory** storage — identity is lost on restart. Kept for compatibility. |
+| `configure(baseUrl)` | Set the auth service URL. Call after `initialize`. |
 | `setLoggingEnabled(enabled)` | Enable/disable debug logging. Disabled by default. |
 | `isRegistered(appId)` | Check if device is registered for this app. |
 | `registerDevice(appId)` | Register device with auth service. Returns `RegistrationResult` with `status` ∈ `{SUCCESS, FAILED, ALREADY_REGISTERED}` — idempotent on retry. Suspend function. |
@@ -88,19 +90,35 @@ val headers = SynheartAuth.shared.signRequest(
 
 ### Security Architecture
 
-- **Key storage**: Pluggable. The default is a software ECDSA P-256
-  manager (Java Security API) suitable for tests; production hosts
-  inject `HardwareKeyManager` via `SynheartAuth.initialize(...)` to
-  bind the key into the Android Keystore (StrongBox-preferred,
-  TEE-fallback).
+- **Key storage**: `SynheartAuth.initialize(context)` binds the device key
+  into the Android Keystore via `HardwareKeyManager` (StrongBox-preferred,
+  TEE fallback; non-exportable). Without any `initialize(...)` call the
+  shared instance falls back to `SoftwareKeyManager`, an in-memory software
+  key meant for JVM tests — on Android the SDK logs an always-on security
+  warning when it is configured that way.
+- **State storage**: `initialize(context)` uses `FileStorageManager`, one
+  file per `app_id` under `Context.getNoBackupFilesDir()/synheart_auth`. It
+  holds only `device_id`, registration state and metadata — never key
+  material. The no-backup location is deliberate: a Keystore key cannot be
+  backed up, so registration state restored onto another device would point
+  at a key that does not exist there. If you supply your own
+  `StorageManaging`, exclude it from Auto Backup for the same reason.
+- **Key rotation**: `rotateKey(appId)` signs the new public key with the
+  current key, and the new key is used for all signing once the server
+  accepts it. Keystore cannot rename keys, so successive keys live under
+  generation-numbered aliases (`synheart_auth_{appId}`, `…_next`,
+  `…_g{n}`); the lowest generation present is the active key.
+- **Recovery**: a registration or rotation interrupted by process death is
+  repaired on the next `registerDevice`/`rotateKey`. Registration state
+  whose signing key is missing is treated as unregistered, so the device
+  re-registers instead of failing every request.
 - **Algorithm**: SHA256withECDSA (secp256r1 / P-256).
 - **Concurrency**: Kotlin coroutines for async operations.
 
-> ⚠️ **Persistence note** — the default `StorageManager` is **in-memory
-> only**. Device identity is lost on every process restart unless the
-> host injects a persistent `StorageManaging` (e.g. an
-> `EncryptedSharedPreferences`-backed implementation) in
-> `SynheartAuth.initialize(...)`. Production apps must wire one.
+> ⚠️ **Persistence note** — the default `StorageManager` and the one-argument
+> `initialize(keyManager)` are **in-memory only**: the device identity is
+> lost on every process restart. Use `initialize(context)`, or
+> `initialize(keyManager, storage)` with a persistent `StorageManaging`.
 
 ### Error Handling
 
