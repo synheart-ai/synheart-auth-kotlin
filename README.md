@@ -2,7 +2,7 @@
 
 # SynheartAuth (Kotlin)
 
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://github.com/synheart-ai/synheart-auth-kotlin)
+[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](https://github.com/synheart-ai/synheart-auth-kotlin)
 [![Kotlin](https://img.shields.io/badge/kotlin-2.1-purple.svg)](https://kotlinlang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
@@ -30,7 +30,7 @@ Add to your `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("ai.synheart:synheart-auth:0.1.1")
+    implementation("ai.synheart:synheart-auth:0.1.4")
 }
 ```
 

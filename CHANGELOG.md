@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-24
+
 ### Fixed
 - Android: `HardwareKeyManager` could not generate a signing key on TEE-only
   devices, so device registration was impossible on most mid-range Android.
@@ -31,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepted one and `CryptoError` was discarding it, so the underlying Keystore
   exception — the only actionable detail — never reached callers, leaving them a
   message and no chain to inspect.
+
+### Documentation
+- README: version badge and Maven coordinate now match the released version
+  (they still said `0.1.1` against a `0.1.3` build).
 
 ## [0.1.3] - 2026-06-28
 
