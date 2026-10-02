@@ -147,4 +147,40 @@ class DeviceRegistrarTest {
             assertTrue(keyManager.hasKey(appId))
         }
     }
+
+    @Test
+    fun `a local promotion failure after the server accepted keeps the new key`() = runTest {
+        // Once the server holds the new key, deleting it locally would strand
+        // the device: the old key is no longer accepted and the new one is gone.
+        var nextDeleted = false
+        val failingPromote = object : ai.synheart.auth.crypto.KeyManaging by keyManager {
+            override fun promoteNextKey(appId: String) =
+                throw SynheartAuthError.CryptoError("promote failed")
+            override fun deleteNextKey(appId: String) { nextDeleted = true }
+        }
+        val registrar = DeviceRegistrar(failingPromote, storage, network)
+        storage.saveDeviceId("device-123", appId)
+        keyManager.generateKeyPair(appId)
+        storage.saveState(DeviceAuthState.REGISTERED, appId)
+        network.rotateKeyResponse = RotateKeyResponse("ok")
+
+        assertThrows(SynheartAuthError.CryptoError::class.java) {
+            kotlinx.coroutines.test.runTest { registrar.rotateKey(appId) }
+        }
+        assertFalse(nextDeleted, "the server-accepted key must not be deleted")
+    }
+
+    @Test
+    fun `a rejected rotation deletes the pending key`() = runTest {
+        storage.saveDeviceId("device-123", appId)
+        val active = keyManager.generateKeyPair(appId)
+        storage.saveState(DeviceAuthState.REGISTERED, appId)
+        network.rotateKeyResponse = RotateKeyResponse("rejected")
+
+        assertThrows(SynheartAuthError.ServerError::class.java) {
+            kotlinx.coroutines.test.runTest { registrar.rotateKey(appId) }
+        }
+        assertArrayEquals(active, keyManager.getPublicKey(appId))
+        assertThrows(SynheartAuthError.CryptoError::class.java) { keyManager.promoteNextKey(appId) }
+    }
 }

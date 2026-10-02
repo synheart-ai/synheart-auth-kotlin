@@ -144,6 +144,12 @@ class DeviceRegistrar(
             throw SynheartAuthError.RegistrationInProgress()
         }
 
+        // Set once the server has accepted the new key. From then on the
+        // pending key IS the device identity server-side, so a later local
+        // failure must not delete it — that would strand the device with a
+        // key the server no longer accepts.
+        var serverAccepted = false
+
         try {
             // Same threading discipline as `register()` — Keystore key
             // generation and signing are synchronous calls that may block
@@ -174,6 +180,7 @@ class DeviceRegistrar(
             if (response.status != "ok" && response.status != "success") {
                 throw SynheartAuthError.ServerError("ROTATION_FAILED", "Server returned: ${response.status}")
             }
+            serverAccepted = true
 
             keyManager.promoteNextKey(appId)
             storage.saveState(DeviceAuthState.REGISTERED, appId)
@@ -182,12 +189,16 @@ class DeviceRegistrar(
             return RotationResult(status = RotationResult.RotationStatus.SUCCESS)
         } catch (e: SynheartAuthError) {
             AuthLogger.error(tag, "Key rotation failed: ${e.message}")
-            try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            if (!serverAccepted) {
+                try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            }
             try { storage.saveState(DeviceAuthState.REGISTERED, appId) } catch (_: Exception) {}
             throw e
         } catch (e: Exception) {
             AuthLogger.error(tag, "Key rotation failed: ${e.message}")
-            try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            if (!serverAccepted) {
+                try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            }
             try { storage.saveState(DeviceAuthState.REGISTERED, appId) } catch (_: Exception) {}
             throw SynheartAuthError.NetworkError(e.message ?: "Unknown error")
         } finally {
