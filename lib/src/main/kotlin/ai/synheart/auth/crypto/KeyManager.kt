@@ -4,6 +4,8 @@ import ai.synheart.auth.models.SynheartAuthError
 import java.security.*
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 interface KeyManaging {
     fun generateKeyPair(appId: String): ByteArray
@@ -25,7 +27,20 @@ interface KeyManaging {
  * NOTE: This class uses Android Keystore APIs via reflection/direct import in the
  * Android build variant. For JVM unit tests, use SoftwareKeyManager or MockKeyManager.
  */
-class HardwareKeyManager(private val keyStore: KeyStore) : KeyManaging {
+class HardwareKeyManager internal constructor(
+    private val keyStore: KeyStore,
+    /**
+     * Test seam: creates a key under the given alias *inside [keyStore]* and
+     * returns its public key. `null` (production) builds a real Android
+     * Keystore key with the StrongBox → TEE fallback. JVM tests have no
+     * `android.security.keystore`, so they supply a generator that writes a
+     * software key into an in-memory KeyStore — enough to exercise the alias
+     * bookkeeping that rotation depends on.
+     */
+    private val keyGenerator: ((alias: String) -> PublicKey)?,
+) : KeyManaging {
+
+    constructor(keyStore: KeyStore) : this(keyStore, null)
 
     companion object {
         /**
@@ -39,15 +54,88 @@ class HardwareKeyManager(private val keyStore: KeyStore) : KeyManaging {
         }
     }
 
-    private fun tag(appId: String): String = "synheart_auth_$appId"
-    private fun nextTag(appId: String): String = "synheart_auth_${appId}_next"
+    // ---------------------------------------------------------------------
+    // Alias scheme
+    //
+    // Android Keystore cannot rename an entry, so a rotated key can never be
+    // moved onto the original alias. Instead every key belongs to a numbered
+    // *generation*, and the generation is encoded in its alias:
+    //
+    //   generation 0  ->  synheart_auth_{appId}          (the 0.1.x primary alias)
+    //   generation 1  ->  synheart_auth_{appId}_next     (the 0.1.x "next" alias)
+    //   generation n  ->  synheart_auth_{appId}_g{n}     (n >= 2)
+    //
+    // Invariant: the ACTIVE key is the LOWEST generation present; a pending
+    // rotation key is always active + 1. Promotion therefore only has to delete
+    // the active alias — the pending key becomes the lowest one and is active
+    // from the next lookup on. No mapping needs to be persisted anywhere, so the
+    // Keystore is the single source of truth and it cannot drift from app
+    // storage (cleared prefs, backup restore, a crash between two writes).
+    //
+    // Generations 0 and 1 reuse the 0.1.x aliases, which keeps upgrades free:
+    // a device registered on 0.1.4 has only generation 0 and keeps signing with
+    // it, and a device that already rotated on 0.1.4 — whose primary alias was
+    // deleted, leaving the new key stranded under `_next` — resolves `_next` as
+    // its active key and starts signing again.
+    //
+    // Mutations take the write lock; lookups (sign, public key) take the read
+    // lock, so a request signed concurrently with a promotion never resolves an
+    // alias that is deleted before it is read.
+    // ---------------------------------------------------------------------
 
-    override fun generateKeyPair(appId: String): ByteArray {
-        return generateKeyForAlias(tag(appId))
+    private val lock = java.util.concurrent.locks.ReentrantReadWriteLock()
+
+    private fun baseAlias(appId: String): String = "synheart_auth_$appId"
+
+    internal fun aliasFor(appId: String, generation: Long): String = when (generation) {
+        0L -> baseAlias(appId)
+        1L -> "${baseAlias(appId)}_next"
+        else -> "${baseAlias(appId)}_g$generation"
     }
 
-    override fun generateNextKeyPair(appId: String): ByteArray {
-        return generateKeyForAlias(nextTag(appId))
+    private fun generationOf(appId: String, alias: String): Long? {
+        val base = baseAlias(appId)
+        if (alias == base) return 0L
+        if (!alias.startsWith("${base}_")) return null
+        val suffix = alias.substring(base.length + 1)
+        if (suffix == "next") return 1L
+        if (!suffix.startsWith("g")) return null
+        // Reject anything that is not exactly the canonical rendering
+        // (`g02`, `g+3`), so a foreign alias is never mistaken for ours.
+        val n = suffix.substring(1).toLongOrNull() ?: return null
+        return if (n >= 2 && suffix == "g$n") n else null
+    }
+
+    /** All generations present for [appId], ascending. */
+    private fun generations(appId: String): List<Long> =
+        keyStore.aliases().toList().mapNotNull { generationOf(appId, it) }.sorted()
+
+    // Fast path for the common case: generation 0 is always the lowest, so a
+    // never-rotated key needs no alias enumeration on the signing path.
+    private fun activeGeneration(appId: String): Long? =
+        if (keyStore.containsAlias(baseAlias(appId))) 0L else generations(appId).firstOrNull()
+
+    private fun activeAlias(appId: String): String? =
+        activeGeneration(appId)?.let { aliasFor(appId, it) }
+
+    private fun deleteAlias(alias: String) {
+        if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
+    }
+
+    override fun generateKeyPair(appId: String): ByteArray = lock.write {
+        // A fresh identity starts at generation 0. Clear every generation first:
+        // a leftover higher-generation key would otherwise be mistaken for a
+        // pending rotation of the new one.
+        generations(appId).forEach { deleteAlias(aliasFor(appId, it)) }
+        generateKeyForAlias(aliasFor(appId, 0L))
+    }
+
+    override fun generateNextKeyPair(appId: String): ByteArray = lock.write {
+        val active = activeGeneration(appId) ?: 0L
+        // Drop any stale pending key (an earlier rotation that crashed or was
+        // never promoted) so at most two generations exist at once.
+        generations(appId).filter { it > active }.forEach { deleteAlias(aliasFor(appId, it)) }
+        generateKeyForAlias(aliasFor(appId, active + 1))
     }
 
     /**
@@ -73,6 +161,7 @@ class HardwareKeyManager(private val keyStore: KeyStore) : KeyManaging {
      * attempt also fails, and then reports both causes.
      */
     private fun generateKeyForAlias(alias: String): ByteArray {
+        keyGenerator?.let { return exportPublicKey(it(alias)) }
         val strongBoxFailure = try {
             return generateKeyForAlias(alias, useStrongBox = true)
         } catch (e: Exception) {
@@ -162,16 +251,17 @@ class HardwareKeyManager(private val keyStore: KeyStore) : KeyManaging {
         return parts.joinToString(" <- ")
     }
 
-    override fun sign(data: ByteArray, appId: String): ByteArray {
-        val alias = tag(appId)
+    override fun sign(data: ByteArray, appId: String): ByteArray = lock.read {
         try {
+            val alias = activeAlias(appId)
+                ?: throw SynheartAuthError.CryptoError("No key found for appId: $appId")
             val entry = keyStore.getEntry(alias, null)
                 ?: throw SynheartAuthError.CryptoError("No key found for appId: $appId")
             val privateKey = (entry as KeyStore.PrivateKeyEntry).privateKey
             val sig = Signature.getInstance("SHA256withECDSA")
             sig.initSign(privateKey)
             sig.update(data)
-            return sig.sign()
+            sig.sign()
         } catch (e: SynheartAuthError) {
             throw e
         } catch (e: Exception) {
@@ -184,48 +274,50 @@ class HardwareKeyManager(private val keyStore: KeyStore) : KeyManaging {
                 causeName == "android.security.keystore.KeyPermanentlyInvalidatedException") {
                 throw SynheartAuthError.KeyInvalidated()
             }
-            throw SynheartAuthError.CryptoError("Signing failed: ${e.message}")
+            throw SynheartAuthError.CryptoError("Signing failed: ${e.message}", cause = e)
         }
     }
 
-    override fun getPublicKey(appId: String): ByteArray? {
-        val alias = tag(appId)
+    override fun getPublicKey(appId: String): ByteArray? = lock.read {
+        val alias = activeAlias(appId) ?: return null
         val cert = keyStore.getCertificate(alias) ?: return null
-        return exportPublicKey(cert.publicKey)
+        exportPublicKey(cert.publicKey)
     }
 
-    override fun promoteNextKey(appId: String) {
-        // Android Keystore doesn't support rename — delete old, re-alias by
-        // copying the next key's public cert reference. In practice on Keystore,
-        // we delete the old alias and keep the next alias as the new primary.
-        // We track alias mapping in the storage layer.
-        val currentAlias = tag(appId)
-        val nextAlias = nextTag(appId)
-        if (!keyStore.containsAlias(nextAlias)) {
+    /**
+     * Make the pending key (generation active + 1) the active one.
+     *
+     * Keystore cannot rename, so this deletes the active alias; by the
+     * lowest-generation-wins rule the pending key is active from the next
+     * lookup on. 0.1.4 deleted the primary alias the same way but kept
+     * resolving it, so every signature after a successful rotation failed.
+     */
+    override fun promoteNextKey(appId: String) = lock.write {
+        val active = activeGeneration(appId)
+            ?: throw SynheartAuthError.CryptoError("No next key to promote for appId: $appId")
+        val pending = aliasFor(appId, active + 1)
+        if (!keyStore.containsAlias(pending)) {
             throw SynheartAuthError.CryptoError("No next key to promote for appId: $appId")
         }
-        keyStore.deleteEntry(currentAlias)
-        // Keystore doesn't support rename, so we re-generate current from next's material.
-        // Instead, we keep next as-is and update the alias mapping in StorageManager.
-        // The caller (DeviceRegistrar) must update the storage alias mapping.
+        keyStore.deleteEntry(aliasFor(appId, active))
     }
 
-    override fun deleteKey(appId: String) {
-        val alias = tag(appId)
-        if (keyStore.containsAlias(alias)) {
-            keyStore.deleteEntry(alias)
-        }
+    /**
+     * Delete the identity for [appId]: every generation, including a pending
+     * rotation key. Deleting only the active key would silently promote the
+     * pending one under the lowest-generation rule.
+     */
+    override fun deleteKey(appId: String) = lock.write {
+        generations(appId).forEach { deleteAlias(aliasFor(appId, it)) }
     }
 
-    override fun deleteNextKey(appId: String) {
-        val alias = nextTag(appId)
-        if (keyStore.containsAlias(alias)) {
-            keyStore.deleteEntry(alias)
-        }
+    /** Delete a pending rotation key, leaving the active key untouched. */
+    override fun deleteNextKey(appId: String) = lock.write {
+        val active = activeGeneration(appId) ?: 0L
+        generations(appId).filter { it > active }.forEach { deleteAlias(aliasFor(appId, it)) }
     }
 
-    override fun hasKey(appId: String): Boolean =
-        keyStore.containsAlias(tag(appId))
+    override fun hasKey(appId: String): Boolean = lock.read { activeGeneration(appId) != null }
 
     private fun exportPublicKey(pub: PublicKey): ByteArray {
         val encoded = pub.encoded

@@ -37,20 +37,81 @@ class DeviceRegistrar(
         inFlight.remove(appId)
     }
 
-    suspend fun register(appId: String): RegistrationResult {
-        val currentState = storage.loadState(appId)
-        if (currentState == DeviceAuthState.REGISTERED) {
-            return RegistrationResult(
-                status = RegistrationResult.RegistrationStatus.ALREADY_REGISTERED,
-                deviceId = storage.loadDeviceId(appId)
-            )
+    /**
+     * Repair persisted state that no live operation owns. Caller must hold the
+     * in-flight claim for [appId].
+     *
+     * With persistent storage, state outlives the process that wrote it:
+     *  - An intermediate state (CHALLENGE_RECEIVED / KEY_READY / REGISTERING)
+     *    with no operation in flight means the process died mid-flow. Left
+     *    alone, a persisted REGISTERING blocked registration forever.
+     *    REGISTERING with a device_id and a key is an interrupted *rotation*:
+     *    the identity is intact, so it is restored to REGISTERED (any pending
+     *    key is left for the next rotation to replace — it may be the key the
+     *    server accepted). Anything else is an interrupted registration and is
+     *    cleared so registration starts over.
+     *  - REGISTERED without a signing key (Keystore cleared, state restored
+     *    onto another device) can never sign; it is cleared so the device
+     *    re-registers instead of failing every request.
+     */
+    private fun reconcile(appId: String) {
+        val state = storage.loadState(appId)
+        when (state) {
+            DeviceAuthState.CHALLENGE_RECEIVED,
+            DeviceAuthState.KEY_READY,
+            DeviceAuthState.REGISTERING -> {
+                if (state == DeviceAuthState.REGISTERING &&
+                    storage.loadDeviceId(appId) != null && keyPresent(appId)
+                ) {
+                    AuthLogger.warn(tag, "Recovering interrupted key rotation for appId=$appId")
+                    storage.saveState(DeviceAuthState.REGISTERED, appId)
+                } else {
+                    AuthLogger.warn(tag, "Discarding interrupted registration (state=${state.value}) for appId=$appId")
+                    cleanup(appId)
+                }
+            }
+            DeviceAuthState.REGISTERED -> {
+                if (!keyPresent(appId)) {
+                    AuthLogger.warn(tag, "Registered state has no signing key for appId=$appId; clearing it")
+                    cleanup(appId)
+                }
+            }
+            else -> {}
         }
-        if (currentState == DeviceAuthState.REGISTERING) {
-            throw SynheartAuthError.RegistrationInProgress()
-        }
+    }
 
+    /** A Keystore lookup that fails is not proof the key is gone: never wipe on an error. */
+    private fun keyPresent(appId: String): Boolean =
+        runCatching { keyManager.hasKey(appId) }.getOrDefault(true)
+
+    /** Claim [appId], reconcile, then run [check]; releases the claim if anything throws. */
+    private inline fun <T> claimAndCheck(appId: String, check: () -> T): T {
         if (!claim(appId)) {
             throw SynheartAuthError.RegistrationInProgress()
+        }
+        try {
+            reconcile(appId)
+            return check()
+        } catch (e: Throwable) {
+            release(appId)
+            throw e
+        }
+    }
+
+    suspend fun register(appId: String): RegistrationResult {
+        val already = claimAndCheck(appId) {
+            if (storage.loadState(appId) == DeviceAuthState.REGISTERED) {
+                RegistrationResult(
+                    status = RegistrationResult.RegistrationStatus.ALREADY_REGISTERED,
+                    deviceId = storage.loadDeviceId(appId)
+                )
+            } else {
+                null
+            }
+        }
+        if (already != null) {
+            release(appId)
+            return already
         }
 
         try {
@@ -133,16 +194,18 @@ class DeviceRegistrar(
     }
 
     suspend fun rotateKey(appId: String): RotationResult {
-        val currentState = storage.loadState(appId)
-        if (currentState != DeviceAuthState.REGISTERED) {
-            throw SynheartAuthError.NotRegistered()
+        val deviceId = claimAndCheck(appId) {
+            if (storage.loadState(appId) != DeviceAuthState.REGISTERED) {
+                throw SynheartAuthError.NotRegistered()
+            }
+            storage.loadDeviceId(appId) ?: throw SynheartAuthError.NotRegistered()
         }
-        val deviceId = storage.loadDeviceId(appId)
-            ?: throw SynheartAuthError.NotRegistered()
 
-        if (!claim(appId)) {
-            throw SynheartAuthError.RegistrationInProgress()
-        }
+        // Set once the server has accepted the new key. From then on the
+        // pending key IS the device identity server-side, so a later local
+        // failure must not delete it — that would strand the device with a
+        // key the server no longer accepts.
+        var serverAccepted = false
 
         try {
             // Same threading discipline as `register()` — Keystore key
@@ -174,6 +237,7 @@ class DeviceRegistrar(
             if (response.status != "ok" && response.status != "success") {
                 throw SynheartAuthError.ServerError("ROTATION_FAILED", "Server returned: ${response.status}")
             }
+            serverAccepted = true
 
             keyManager.promoteNextKey(appId)
             storage.saveState(DeviceAuthState.REGISTERED, appId)
@@ -182,12 +246,16 @@ class DeviceRegistrar(
             return RotationResult(status = RotationResult.RotationStatus.SUCCESS)
         } catch (e: SynheartAuthError) {
             AuthLogger.error(tag, "Key rotation failed: ${e.message}")
-            try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            if (!serverAccepted) {
+                try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            }
             try { storage.saveState(DeviceAuthState.REGISTERED, appId) } catch (_: Exception) {}
             throw e
         } catch (e: Exception) {
             AuthLogger.error(tag, "Key rotation failed: ${e.message}")
-            try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            if (!serverAccepted) {
+                try { keyManager.deleteNextKey(appId) } catch (_: Exception) {}
+            }
             try { storage.saveState(DeviceAuthState.REGISTERED, appId) } catch (_: Exception) {}
             throw SynheartAuthError.NetworkError(e.message ?: "Unknown error")
         } finally {
