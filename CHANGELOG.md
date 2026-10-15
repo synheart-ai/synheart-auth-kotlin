@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-15
+
 ### Fixed
 - Android: signing failed after every successful key rotation with
   `HardwareKeyManager`. Keystore cannot rename an entry, so `promoteNextKey`
