@@ -13,8 +13,14 @@ updates:
     directory: "/"
     patterns: ["*"]
     multi-ecosystem-group: dependency-updates
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
     patterns: ["*"]
     multi-ecosystem-group: dependency-updates
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
